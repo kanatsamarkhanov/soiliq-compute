@@ -97,6 +97,22 @@ class KrigingMap(Base):
     computed_at = Column(DateTime, default=datetime.utcnow)
 
 
+class KazHydrometRecord(Base):
+    """Суточная запись архива КазГидромет (2000/2013–2026) по станции."""
+    __tablename__ = "kazhydromet_records"
+
+    id = Column(Integer, primary_key=True, index=True)
+    station = Column(String, index=True)     # 'Сарыозек', 'Талдыкорган', 'Баканас', ...
+    date = Column(Date, index=True)
+
+    temp_avg_c = Column(Float, nullable=True)
+    temp_max_c = Column(Float, nullable=True)
+    temp_min_c = Column(Float, nullable=True)
+    precip_mm = Column(Float, nullable=True)
+
+    synced_at = Column(DateTime, default=datetime.utcnow)
+
+
 class UploadLog(Base):
     """История загрузок Excel/CSV файлов."""
     __tablename__ = "upload_logs"

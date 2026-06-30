@@ -2,7 +2,7 @@ import numpy as np
 from sqlalchemy.orm import Session
 from datetime import date
 
-from app.models.db_models import SoilPoint, SoilSample, WeatherRecord, ForecastResult
+from app.models.db_models import SoilPoint, SoilSample, WeatherRecord, KazHydrometRecord, ForecastResult
 
 SCENARIOS = {
     "baseline": {"k_mult": 1.0,  "input_base": 0.0,  "yield_mult": 1.00},
@@ -19,19 +19,39 @@ def climate_modifier(db: Session, station: str = "sarybastau") -> float:
     Климатический модификатор скорости минерализации на основе среднегодовой
     температуры и осадков (упрощённый аналог RothC rate modifiers a,b,c).
     Возвращает множитель ~0.7–1.3.
-    """
-    records = db.query(WeatherRecord).filter(WeatherRecord.station == station).all()
-    if not records:
-        return 1.0
 
-    temps = [r.temp_avg_c for r in records if r.temp_avg_c is not None]
-    precs = [r.precip_mm for r in records if r.precip_mm is not None]
+    Источник данных по приоритету:
+    1. Архив КазГидромет (kazhydromet_records) — 20+ лет наблюдений, надёжнее
+    2. Davis WeatherLink (weather_records) — свежие данные, но короткий ряд
+    """
+    # Сопоставление коротких имён станций с названиями в архиве КазГидромет
+    KAZHYDROMET_STATION_MAP = {
+        "sarybastau": "Сарыозек",  # ближайшая станция КазГидромет к Сарыбастау
+        "zholaman": "Сарыозек",
+    }
+
+    kz_station = KAZHYDROMET_STATION_MAP.get(station)
+    temps: list[float] = []
+    precs: list[float] = []
+
+    if kz_station:
+        kz_records = db.query(KazHydrometRecord).filter(KazHydrometRecord.station == kz_station).all()
+        temps = [r.temp_avg_c for r in kz_records if r.temp_avg_c is not None]
+        precs = [r.precip_mm for r in kz_records if r.precip_mm is not None]
+
+    if not temps:
+        # Фоллбэк на Davis WeatherLink, если архива КазГидромет нет в базе
+        records = db.query(WeatherRecord).filter(WeatherRecord.station == station).all()
+        temps = [r.temp_avg_c for r in records if r.temp_avg_c is not None]
+        precs = [r.precip_mm for r in records if r.precip_mm is not None]
 
     if not temps:
         return 1.0
 
     avg_temp = sum(temps) / len(temps)
-    total_precip = sum(precs) if precs else 250
+    # Для многолетнего архива считаем средние ГОДОВЫЕ осадки, а не сумму за весь период
+    years_span = max(1, len(temps) / 365.0)
+    total_precip = (sum(precs) / years_span) if precs else 250
 
     # Температурный модификатор (растёт с температурой, эмпирическая формула RothC-like)
     temp_mod = 47.91 / (1 + np.exp(106.06 / (avg_temp + 18.27))) if avg_temp > -18 else 0.1
