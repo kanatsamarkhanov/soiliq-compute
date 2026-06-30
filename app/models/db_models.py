@@ -85,6 +85,30 @@ class ForecastResult(Base):
     point = relationship("SoilPoint", back_populates="forecasts")
 
 
+class ApsimJob(Base):
+    """
+    Очередь задач APSIM на PostgreSQL (вместо Redis — проще для гибридной
+    архитектуры, где воркер на отдельном сервере опрашивает Railway по HTTP).
+    """
+    __tablename__ = "apsim_jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    point_code = Column(String, index=True)
+    scenario = Column(String, default="baseline")    # baseline | organic | npk | alp
+    years = Column(Integer, default=1)
+    sowing_date = Column(String, nullable=True)       # 'MM-DD', напр. '03-15'
+    crop = Column(String, default="Wheat")
+
+    status = Column(String, default="pending", index=True)  # pending | running | done | failed
+    result = Column(JSON, nullable=True)              # {grain_yield_kg_ha, biomass, drainage, ...}
+    error_message = Column(String, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    worker_id = Column(String, nullable=True)
+
+
 class KrigingMap(Base):
     """Сохранённый растр кригинг-интерполяции (как сетка значений)."""
     __tablename__ = "kriging_maps"
