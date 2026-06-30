@@ -19,23 +19,36 @@ def _find_header_row(df: pd.DataFrame) -> int:
     raise ValueError("Не найдена строка заголовка (ожидается колонка 'Станция')")
 
 
-def _is_temperature_file(df: pd.DataFrame, header_row: int) -> bool:
+def _detect_file_type(df: pd.DataFrame) -> str:
+    """Различает 3 типа файлов КазГидромет по заголовку таблицы (строка 1)."""
+    title_row = " ".join(str(x) for x in df.iloc[1].tolist() if pd.notna(x)) if len(df) > 1 else ""
+    if "почвы" in title_row.lower():
+        return "soil_temp"
+    if "воздуха" in title_row.lower():
+        return "air_temp"
+    if "осадк" in title_row.lower():
+        return "precip"
+    # Фоллбэк по заголовкам колонок, если строка названия таблицы не распознана
+    header_row = _find_header_row(df)
     header_vals = [str(x) for x in df.iloc[header_row].tolist() if pd.notna(x)]
-    return any("Сред" in v for v in header_vals)
+    if any("Сумма" in v for v in header_vals):
+        return "precip"
+    if any("Сред" in v for v in header_vals):
+        return "air_temp"
+    raise ValueError("Не удалось определить тип файла (воздух/почва/осадки)")
 
 
 def parse_kazhydromet_file(db: Session, filepath: str, filename: str) -> dict:
     """
-    Парсит один файл КазГидромет (температурный или осадков) и записывает/обновляет
-    суточные данные в kazhydromet_records. Температура и осадки сливаются в одну
-    запись на (станция, дата) — т.е. можно грузить t- и p- файлы в любом порядке.
+    Парсит один файл КазГидромет (температура воздуха / температура почвы / осадки)
+    и записывает/обновляет суточные данные в kazhydromet_records. Все три типа файлов
+    сливаются в одну запись на (станция, дата) — грузить можно в любом порядке.
     """
     df = pd.read_excel(filepath, header=None)
+    file_type = _detect_file_type(df)
     header_row = _find_header_row(df)
-    is_temp = _is_temperature_file(df, header_row)
 
     data = df.iloc[header_row + 1:].reset_index(drop=True)
-    # Колонки по позиции: 0=Станция, 1=Дата, 2=Сред/Сумма, 3=Макс (если темп), 4=Мин (если темп)
     inserted, updated = 0, 0
 
     for _, row in data.iterrows():
@@ -64,13 +77,11 @@ def parse_kazhydromet_file(db: Session, filepath: str, filename: str) -> dict:
             except (ValueError, TypeError):
                 return None
 
-        if is_temp:
-            payload = {
-                "temp_avg_c": num(row.get(2)),
-                "temp_max_c": num(row.get(3)),
-                "temp_min_c": num(row.get(4)),
-            }
-        else:
+        if file_type == "air_temp":
+            payload = {"temp_avg_c": num(row.get(2)), "temp_max_c": num(row.get(3)), "temp_min_c": num(row.get(4))}
+        elif file_type == "soil_temp":
+            payload = {"soil_temp_avg_c": num(row.get(2)), "soil_temp_max_c": num(row.get(3)), "soil_temp_min_c": num(row.get(4))}
+        else:  # precip
             payload = {"precip_mm": num(row.get(2))}
 
         if existing:
@@ -84,10 +95,11 @@ def parse_kazhydromet_file(db: Session, filepath: str, filename: str) -> dict:
 
     db.commit()
 
+    type_labels = {"air_temp": "температура воздуха", "soil_temp": "температура почвы", "precip": "осадки"}
     return {
         "status": "success",
         "filename": filename,
-        "type": "temperature" if is_temp else "precipitation",
+        "type": type_labels[file_type],
         "rows_parsed": len(data),
         "rows_inserted": inserted,
         "rows_updated": updated,
@@ -118,6 +130,7 @@ def get_station_summary(db: Session) -> list[dict]:
             func.max(KazHydrometRecord.date).label("last_date"),
             func.count(KazHydrometRecord.id).label("records"),
             func.avg(KazHydrometRecord.temp_avg_c).label("avg_temp"),
+            func.avg(KazHydrometRecord.soil_temp_avg_c).label("avg_soil_temp"),
             func.sum(KazHydrometRecord.precip_mm).label("total_precip"),
         )
         .group_by(KazHydrometRecord.station)
@@ -131,6 +144,7 @@ def get_station_summary(db: Session) -> list[dict]:
             "last_date": str(r.last_date) if r.last_date else None,
             "records": r.records,
             "avg_temp_c": round(r.avg_temp, 1) if r.avg_temp is not None else None,
+            "avg_soil_temp_c": round(r.avg_soil_temp, 1) if r.avg_soil_temp is not None else None,
             "total_precip_mm": round(r.total_precip, 0) if r.total_precip is not None else None,
         }
         for r in rows

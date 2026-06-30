@@ -110,6 +110,11 @@ class KazHydrometRecord(Base):
     temp_min_c = Column(Float, nullable=True)
     precip_mm = Column(Float, nullable=True)
 
+    # Температура поверхности почвы (отдельный архив КазГидромет "Табл. 2.1.2")
+    soil_temp_avg_c = Column(Float, nullable=True)
+    soil_temp_max_c = Column(Float, nullable=True)
+    soil_temp_min_c = Column(Float, nullable=True)
+
     synced_at = Column(DateTime, default=datetime.utcnow)
 
 
