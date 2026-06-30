@@ -6,12 +6,15 @@ from sqlalchemy.orm import Session
 from app.models.db_models import SoilPoint, SoilSample, UploadLog
 from app.services.geocode import normalize_code
 
+WKT_POINT_RE = re.compile(r"POINT\s*\(\s*([-\d.]+)\s+([-\d.]+)\s*\)", re.IGNORECASE)
+
 # Маппинг возможных названий колонок (RU/KZ/EN) на поля схемы
 COLUMN_ALIASES = {
-    "point_code":      ["точка", "№ точки", "point", "id точки", "номер точки", "nuqta"],
+    "point_code":      ["точка", "№ точки", "point", "id точки", "номер точки", "nuqta", "варианты", "варианты, точки", "name"],
     "lon":             ["долгота", "lon", "longitude", "x"],
     "lat":             ["широта", "lat", "latitude", "y"],
-    "crop":            ["культура", "crop", "дакыл"],
+    "wkt":             ["wkt", "координаты", "geometry", "координаты (wkt)", "wkt_coord"],
+    "crop":            ["культура", "crop", "дакыл", "с-х. культура", "сх культура"],
     "sample_date":     ["дата", "date", "дата отбора"],
     "humus_pct":       ["гумус", "humus", "%гумус", "гумус, %"],
     "nitrogen_mgkg":   ["азот", "nitrogen", "n", "гидр.азот", "гидролизуемый азот"],
@@ -77,20 +80,32 @@ def parse_and_ingest(db: Session, filepath: str, filename: str) -> dict:
             continue
 
         point = db.query(SoilPoint).filter(SoilPoint.point_code == code).first()
+
+        lon, lat = None, None
+        if mapping.get("wkt"):
+            m = WKT_POINT_RE.search(str(row.get(mapping["wkt"], "")))
+            if m:
+                lon, lat = float(m.group(1)), float(m.group(2))
+        if lon is None and mapping.get("lon") and mapping.get("lat"):
+            lon_v, lat_v = row.get(mapping["lon"]), row.get(mapping["lat"])
+            if pd.notna(lon_v) and pd.notna(lat_v):
+                lon, lat = float(lon_v), float(lat_v)
+
         if not point:
-            lon = row.get(mapping.get("lon"), None)
-            lat = row.get(mapping.get("lat"), None)
-            if pd.isna(lon) or pd.isna(lat):
+            if lon is None:
                 warnings.append(f"{code}: нет координат — точка создана без геопривязки")
-                lon, lat = None, None
             point = SoilPoint(
                 point_code=code,
-                lon=float(lon) if lon is not None and not pd.isna(lon) else 0.0,
-                lat=float(lat) if lat is not None and not pd.isna(lat) else 0.0,
+                lon=lon if lon is not None else 0.0,
+                lat=lat if lat is not None else 0.0,
                 crop=str(row.get(mapping.get("crop"), "")) if mapping.get("crop") else None,
             )
             db.add(point)
             db.flush()
+        elif lon is not None and (point.lon == 0.0 and point.lat == 0.0):
+            # Точка уже существовала без координат (например, из файла без WKT) — дозаполняем
+            point.lon = lon
+            point.lat = lat
 
         def num(field):
             col = mapping.get(field)
