@@ -4,6 +4,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.models.db_models import SoilPoint, SoilSample, UploadLog
+from app.services.geocode import normalize_code
 
 # Маппинг возможных названий колонок (RU/KZ/EN) на поля схемы
 COLUMN_ALIASES = {
@@ -70,7 +71,7 @@ def parse_and_ingest(db: Session, filepath: str, filename: str) -> dict:
     warnings = []
 
     for _, row in df.iterrows():
-        code = str(row.get(mapping["point_code"], "")).strip()
+        code = normalize_code(str(row.get(mapping["point_code"], "")).strip())
         if not code or code.lower() == "nan":
             skipped += 1
             continue

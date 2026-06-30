@@ -4,24 +4,30 @@ from sqlalchemy.orm import Session
 
 from app.models.db_models import SoilPoint
 
+# Поддерживает "POINT(...)", "Point (...)", с пробелом перед скобкой или без
 WKT_POINT_RE = re.compile(r"POINT\s*\(\s*([-\d.]+)\s+([-\d.]+)\s*\)", re.IGNORECASE)
 
 COORD_ALIASES = {
-    "point_code": ["точка", "№ точки", "point", "id точки", "номер точки", "варианты", "варианты, точки"],
+    "point_code": ["точка", "№ точки", "point", "id точки", "номер точки", "варианты", "варианты, точки", "name", "название"],
     "lon":        ["долгота", "lon", "longitude", "x"],
     "lat":        ["широта", "lat", "latitude", "y"],
-    "wkt":        ["wkt", "геометрия", "geometry", "координаты"],
+    "wkt":        ["wkt", "геометрия", "geometry", "координаты", "wkt_coord"],
 }
 
 
-def _normalize(col: str) -> str:
+def normalize_code(code: str) -> str:
+    """Убирает пробелы внутри кода точки: 'Т 1' -> 'Т1', 'т-1' -> 'т1'."""
+    return re.sub(r"[\s\-_]+", "", str(code).strip())
+
+
+def _normalize_col(col: str) -> str:
     return re.sub(r"[^\w]", "", str(col).strip().lower())
 
 
 def _match_column(columns, aliases):
-    norm_cols = {_normalize(c): c for c in columns}
+    norm_cols = {_normalize_col(c): c for c in columns}
     for alias in aliases:
-        na = _normalize(alias)
+        na = _normalize_col(alias)
         for nc, orig in norm_cols.items():
             if na in nc or nc in na:
                 return orig
@@ -30,8 +36,9 @@ def _match_column(columns, aliases):
 
 def parse_and_geocode(db: Session, filepath: str, filename: str) -> dict:
     """
-    Читает файл с координатами (lon/lat колонками или WKT POINT(...))
-    и привязывает их к уже существующим SoilPoint по point_code.
+    Читает файл с координатами (lon/lat колонками или WKT 'POINT (...)')
+    и привязывает их к уже существующим SoilPoint по point_code
+    (сравнение нормализованное — без пробелов/дефисов, регистронезависимое).
     """
     if filename.lower().endswith(".csv"):
         df = pd.read_csv(filepath)
@@ -48,12 +55,17 @@ def parse_and_geocode(db: Session, filepath: str, filename: str) -> dict:
     if not (lon_col and lat_col) and not wkt_col:
         return {"status": "failed", "error": "Не найдены колонки координат (lon/lat или WKT)"}
 
+    # Индекс существующих точек по нормализованному коду
+    all_points = db.query(SoilPoint).all()
+    points_by_norm = {normalize_code(p.point_code): p for p in all_points}
+
     updated, not_found = 0, []
 
     for _, row in df.iterrows():
-        code = str(row.get(code_col, "")).strip()
-        if not code or code.lower() == "nan":
+        raw_code = str(row.get(code_col, "")).strip()
+        if not raw_code or raw_code.lower() == "nan":
             continue
+        norm = normalize_code(raw_code)
 
         lon, lat = None, None
         if lon_col and lat_col:
@@ -68,9 +80,9 @@ def parse_and_geocode(db: Session, filepath: str, filename: str) -> dict:
         if lon is None or lat is None:
             continue
 
-        point = db.query(SoilPoint).filter(SoilPoint.point_code == code).first()
+        point = points_by_norm.get(norm)
         if not point:
-            not_found.append(code)
+            not_found.append(raw_code)
             continue
 
         point.lon = lon
