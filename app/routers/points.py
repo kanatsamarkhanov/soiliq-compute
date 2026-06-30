@@ -175,3 +175,150 @@ def delete_manual_sample(point_code: str, sample_date: date_type, db: Session = 
     db.delete(sample)
     db.commit()
     return {"status": "deleted", "point_code": code, "sample_date": str(sample_date)}
+
+
+# ─── Пакетный ввод (таблица-редактор) ──────────────────────────────────────
+
+class BulkSampleRow(BaseModel):
+    row_index: int  # для сопоставления результата со строкой в UI
+    point_code: str
+    lon: Optional[float] = None
+    lat: Optional[float] = None
+    crop: Optional[str] = None
+    sample_date: date_type
+    depth_cm: str = "0-20"
+    humus_pct: Optional[float] = None
+    nitrogen_mgkg: Optional[float] = None
+    phosphorus_mgkg: Optional[float] = None
+    potassium_mgkg: Optional[float] = None
+    ph: Optional[float] = None
+    carbonates_pct: Optional[float] = None
+    density_gcm3: Optional[float] = None
+    moisture_pct: Optional[float] = None
+
+
+class BulkSamplesInput(BaseModel):
+    rows: list[BulkSampleRow]
+
+
+@router.post("/bulk-samples")
+def add_bulk_samples(data: BulkSamplesInput, db: Session = Depends(get_db)):
+    """
+    Пакетная запись из табличного редактора на портале.
+    Обрабатывает каждую строку независимо — если одна строка с ошибкой,
+    остальные всё равно сохраняются, ошибки возвращаются по row_index.
+    """
+    results = []
+
+    for row in data.rows:
+        try:
+            code = normalize_code(row.point_code)
+            if not code:
+                results.append({"row_index": row.row_index, "status": "error", "error": "Пустой код точки"})
+                continue
+
+            point = db.query(SoilPoint).filter(SoilPoint.point_code == code).first()
+            if not point:
+                if row.lon is None or row.lat is None:
+                    results.append({
+                        "row_index": row.row_index, "status": "error",
+                        "error": f"Точка '{code}' не найдена, нужны координаты"
+                    })
+                    continue
+                point = SoilPoint(point_code=code, lon=row.lon, lat=row.lat, crop=row.crop)
+                db.add(point)
+                db.flush()
+            else:
+                if row.lon is not None and row.lat is not None and point.lon == 0.0 and point.lat == 0.0:
+                    point.lon = row.lon
+                    point.lat = row.lat
+                if row.crop and not point.crop:
+                    point.crop = row.crop
+
+            sample = (
+                db.query(SoilSample)
+                .filter(SoilSample.point_id == point.id, SoilSample.sample_date == row.sample_date)
+                .first()
+            )
+            is_new = sample is None
+            if not sample:
+                sample = SoilSample(point_id=point.id, sample_date=row.sample_date, source_file="bulk-entry")
+                db.add(sample)
+
+            for field in ["humus_pct", "nitrogen_mgkg", "phosphorus_mgkg", "potassium_mgkg",
+                          "ph", "carbonates_pct", "density_gcm3", "moisture_pct"]:
+                value = getattr(row, field)
+                if value is not None:
+                    setattr(sample, field, value)
+            sample.depth_cm = row.depth_cm
+
+            db.flush()
+            results.append({
+                "row_index": row.row_index, "status": "created" if is_new else "updated",
+                "point_code": code, "fertility_score": compute_fertility_score(sample),
+            })
+        except Exception as e:
+            db.rollback()
+            results.append({"row_index": row.row_index, "status": "error", "error": str(e)})
+
+    db.commit()
+
+    succeeded = sum(1 for r in results if r["status"] in ("created", "updated"))
+    return {"status": "success", "total": len(data.rows), "succeeded": succeeded, "results": results}
+
+
+@router.post("/bulk-samples")
+def add_bulk_samples(rows: list[ManualSampleInput], db: Session = Depends(get_db)):
+    """
+    Сохраняет сразу несколько проб из табличного редактора на портале.
+    Каждая строка обрабатывается независимо — ошибка в одной не блокирует остальные.
+    """
+    results = []
+    for i, data in enumerate(rows):
+        try:
+            code = normalize_code(data.point_code)
+            if not code:
+                results.append({"row": i, "status": "skipped", "reason": "пустой код точки"})
+                continue
+
+            point = db.query(SoilPoint).filter(SoilPoint.point_code == code).first()
+            if not point:
+                if data.lon is None or data.lat is None:
+                    results.append({"row": i, "status": "error", "reason": f"точка '{code}' не найдена, нет координат"})
+                    continue
+                point = SoilPoint(point_code=code, lon=data.lon, lat=data.lat, crop=data.crop)
+                db.add(point)
+                db.flush()
+            else:
+                if data.lon is not None and data.lat is not None and point.lon == 0.0 and point.lat == 0.0:
+                    point.lon = data.lon
+                    point.lat = data.lat
+                if data.crop and not point.crop:
+                    point.crop = data.crop
+
+            sample = (
+                db.query(SoilSample)
+                .filter(SoilSample.point_id == point.id, SoilSample.sample_date == data.sample_date)
+                .first()
+            )
+            is_new = sample is None
+            if not sample:
+                sample = SoilSample(point_id=point.id, sample_date=data.sample_date, source_file="spreadsheet-entry")
+                db.add(sample)
+
+            for field in ["humus_pct", "nitrogen_mgkg", "phosphorus_mgkg", "potassium_mgkg",
+                          "ph", "carbonates_pct", "density_gcm3", "moisture_pct"]:
+                value = getattr(data, field)
+                if value is not None:
+                    setattr(sample, field, value)
+            sample.depth_cm = data.depth_cm
+
+            results.append({"row": i, "status": "created" if is_new else "updated", "point_code": code})
+        except Exception as e:
+            db.rollback()
+            results.append({"row": i, "status": "error", "reason": str(e)})
+
+    db.commit()
+
+    ok_count = sum(1 for r in results if r["status"] in ("created", "updated"))
+    return {"status": "success", "total": len(rows), "saved": ok_count, "results": results}
