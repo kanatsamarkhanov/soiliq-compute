@@ -85,6 +85,22 @@ class ForecastResult(Base):
     point = relationship("SoilPoint", back_populates="forecasts")
 
 
+class NdviRecord(Base):
+    """NDVI временной ряд по точке (Sentinel-2, Google Earth Engine)."""
+    __tablename__ = "ndvi_records"
+
+    id = Column(Integer, primary_key=True, index=True)
+    point_id = Column(Integer, ForeignKey("soil_points.id"))
+    date = Column(Date, index=True)
+    ndvi = Column(Float, nullable=True)
+    cloud_pct = Column(Float, nullable=True)
+    source = Column(String, default="Sentinel-2 SR")
+
+    synced_at = Column(DateTime, default=datetime.utcnow)
+
+    point = relationship("SoilPoint")
+
+
 class ApsimJob(Base):
     """
     Очередь задач APSIM на PostgreSQL (вместо Redis — проще для гибридной

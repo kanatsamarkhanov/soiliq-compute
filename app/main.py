@@ -5,7 +5,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.core.config import settings
 from app.core.db import Base, engine, SessionLocal
-from app.routers import upload, points, forecast, kriging, weather, kazhydromet, apsim
+from app.routers import upload, points, forecast, kriging, weather, kazhydromet, apsim, ndvi
 from app.services.weather_sync import sync_all_stations
 
 scheduler = AsyncIOScheduler()
@@ -54,6 +54,7 @@ app.include_router(kriging.router)
 app.include_router(weather.router)
 app.include_router(kazhydromet.router)
 app.include_router(apsim.router)
+app.include_router(ndvi.router)
 
 
 @app.get("/")

@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     # Защита внутренних / cron эндпоинтов
     api_secret: str = "change-me"
 
+    # Google Earth Engine (NDVI) — JSON-ключ сервис-аккаунта, см. app/services/ndvi.py
+    gee_service_account_json: str = ""
+
     # CORS — домен Vercel-портала
     allowed_origin: str = "https://soiliq.vercel.app"
 
