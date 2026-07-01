@@ -43,3 +43,50 @@ async def upload_kazhydromet(
 def summary(db: Session = Depends(get_db)):
     """Сводка покрытия по станциям — для отображения на странице климата."""
     return {"stations": get_station_summary(db)}
+
+
+@router.post("/migrate")
+def run_migration(x_api_secret: str = Header(None), db: Session = Depends(get_db)):
+    """Одноразовая миграция — добавляет недостающие колонки в kazhydromet_records."""
+    from app.core.config import settings
+    if x_api_secret != settings.api_secret:
+        raise HTTPException(401, "Unauthorized")
+    from sqlalchemy import text
+    db.execute(text("""
+        ALTER TABLE kazhydromet_records
+          ADD COLUMN IF NOT EXISTS soil_temp_avg_c FLOAT,
+          ADD COLUMN IF NOT EXISTS soil_temp_max_c FLOAT,
+          ADD COLUMN IF NOT EXISTS soil_temp_min_c FLOAT
+    """))
+    db.execute(text("""
+        CREATE TABLE IF NOT EXISTS ndvi_records (
+          id SERIAL PRIMARY KEY,
+          point_id INTEGER REFERENCES soil_points(id),
+          date DATE NOT NULL,
+          ndvi FLOAT,
+          cloud_pct FLOAT,
+          source VARCHAR DEFAULT 'Sentinel-2 SR',
+          synced_at TIMESTAMP DEFAULT NOW()
+        )
+    """))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_ndvi_point ON ndvi_records(point_id)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_ndvi_date ON ndvi_records(date)"))
+    db.execute(text("""
+        CREATE TABLE IF NOT EXISTS apsim_jobs (
+          id SERIAL PRIMARY KEY,
+          point_code VARCHAR,
+          scenario VARCHAR DEFAULT 'baseline',
+          years INTEGER DEFAULT 1,
+          sowing_date VARCHAR,
+          crop VARCHAR DEFAULT 'Wheat',
+          status VARCHAR DEFAULT 'pending',
+          result JSONB,
+          error_message TEXT,
+          created_at TIMESTAMP DEFAULT NOW(),
+          started_at TIMESTAMP,
+          finished_at TIMESTAMP,
+          worker_id VARCHAR
+        )
+    """))
+    db.commit()
+    return {"status": "migration complete"}
