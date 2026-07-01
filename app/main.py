@@ -21,10 +21,17 @@ async def scheduled_sync():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Создаём таблицы при старте (для прод — использовать Alembic-миграции)
     Base.metadata.create_all(bind=engine)
 
-    # Автосинхронизация погоды каждые 6 часов
+    # Первичная синхронизация при старте (за 7 дней)
+    try:
+        db = SessionLocal()
+        await sync_all_stations(db, days_back=7)
+        db.close()
+    except Exception as e:
+        print(f"[Weather initial sync error] {e}")
+
+    # Автосинхронизация каждые 6 часов
     scheduler.add_job(scheduled_sync, "interval", hours=6, id="weather_sync")
     scheduler.start()
 
